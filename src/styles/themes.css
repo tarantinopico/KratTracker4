@@ -1,0 +1,41 @@
+body[data-theme="emerald"] {
+  --accent: #30d158;
+  --accent-light: #5ee684;
+  --accent-dim: rgba(48, 209, 88, 0.16);
+  --accent-glow: rgba(48, 209, 88, 0.35);
+}
+
+body[data-theme="cyan"] {
+  --accent: #64d2ff;
+  --accent-light: #90e0ef;
+  --accent-dim: rgba(100, 210, 255, 0.16);
+  --accent-glow: rgba(100, 210, 255, 0.35);
+}
+
+body[data-theme="purple"] {
+  --accent: #bf5af2;
+  --accent-light: #da8fff;
+  --accent-dim: rgba(191, 90, 242, 0.16);
+  --accent-glow: rgba(191, 90, 242, 0.35);
+}
+
+body[data-theme="amber"] {
+  --accent: #ff9f0a;
+  --accent-light: #ffb340;
+  --accent-dim: rgba(255, 159, 10, 0.16);
+  --accent-glow: rgba(255, 159, 10, 0.35);
+}
+
+body[data-theme="rose"] {
+  --accent: #ff375f;
+  --accent-light: #ff6b8b;
+  --accent-dim: rgba(255, 55, 95, 0.16);
+  --accent-glow: rgba(255, 55, 95, 0.35);
+}
+
+body[data-theme="gold"] {
+  --accent: #ffd60a;
+  --accent-light: #ffe066;
+  --accent-dim: rgba(255, 214, 10, 0.16);
+  --accent-glow: rgba(255, 214, 10, 0.35);
+}

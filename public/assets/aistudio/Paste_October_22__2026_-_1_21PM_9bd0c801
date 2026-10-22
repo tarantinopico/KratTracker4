@@ -1,0 +1,1631 @@
+Kratom Tracker — React + TypeScript PWA: Kompletní implementační spec
+
+Tento dokument je jediný zdroj pravdy pro přepsání aplikace "Kratom Tracker v4.1" (původně single-file HTML) do React + TypeScript PWA. Cílem je funkčně 1:1 identická aplikace — všechny obrazovky, modály, výpočty, chování, vzhled a datový formát musí být zachovány. Data musí být plně kompatibilní pro import/export s původní HTML verzí.
+
+Instrukce pro AI: Z tohoto dokumentu vytvoř celý projekt od nuly — strukturu, komponenty, styl, logiku, service worker, manifest. Pokud něco není výslovně popsáno, odvoď to z popsaného chování. Nic nevynechávej, nic nepřidávej.
+
+---
+
+1. Co aplikace dělá (kontext)
+
+Osobní deník užívání kratomu. Uživatel zaznamenává dávky (gramáž, druh, balení, nápoj, čas, hodnocení, efekt, poznámka). Aplikace:
+
+· Sleduje denní limity (měkký, tvrdý STOP), rozpočty (denní, měsíční), cooldown mezi dávkami
+· Počítá farmakokinetiku mitragyninu (MIT) — aktivní hladina v těle v čase (dvoufázový eliminační model)
+· Počítá skóre citlivosti receptorů (tolerance 0–100 %)
+· Spravuje sklad balení s možností "dopočtu" reálné spotřeby
+· Umožňuje T-Break (pauzy na regeneraci receptorů)
+· Má 14 úspěchů (gamifikace) a chytré postřehy
+· Nabízí analytiku: křivky spotřeby, rozestupy, plazmatická hladina, týdenní heatmapy, rozbor odrůd, úspory
+· Vše lokálně v localStorage — žádný backend
+· PWA — offline, installable, mobile-first (max-width 540 px, safe-area insets)
+
+---
+
+2. Tech stack
+
+· React 18 + TypeScript (strict)
+· Vite (build)
+· vite-plugin-pwa (service worker + manifest)
+· Zustand s persist middlewarem pro localStorage (klíč kratom-tracker-v3, fallback čtení kratom-tracker-v2)
+· Žádná UI/icon/chart knihovna — všechny SVG ikony a grafy jsou vlastní komponenty (musí vypadat identicky jako originál)
+· Plain CSS s CSS custom properties pro témata. Všechny glassmorphism efekty (backdrop-filter, blur, saturate, 0.5px borders) musí být zachovány 1:1.
+· Žádný Tailwind — originál používá specifické Apple-style hodnoty (např. backdrop-filter: blur(28px) saturate(190%))
+· Font stack: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif
+
+---
+
+3. Struktura projektu
+
+```
+kratom-tracker/
+├── public/
+│   ├── manifest.webmanifest
+│   ├── icons/                 (192, 512 px PNG nebo SVG)
+│   └── favicon.svg
+├── src/
+│   ├── main.tsx
+│   ├── App.tsx
+│   ├── sw.ts                              (vite-plugin-pwa inject)
+│   ├── vite-env.d.ts
+│   │
+│   ├── types/
+│   │   └── index.ts                       (všechny TS interface)
+│   │
+│   ├── constants/
+│   │   ├── defaults.ts                    (DEFAULT_SETTINGS)
+│   │   ├── seeds.ts                       (seedStrains, seedPackages, seedDoses, seedBeverages)
+│   │   ├── achievements.ts                (ACH_DEFS)
+│   │   ├── icons.ts                       (SVG_ICONS mapa)
+│   │   ├── effects.ts                     (EFFECT_MAP)
+│   │   ├── themes.ts                      (THEMES)
+│   │   └── palette.ts                     (PALETTE barev pro druhy)
+│   │
+│   ├── store/
+│   │   ├── useAppStore.ts                 (Zustand store + persist)
+│   │   ├── selectors.ts                   (odvozené selektory – streak, stock, etc.)
+│   │   └── migrations.ts                  (migrateState z localStorage)
+│   │
+│   ├── lib/
+│   │   ├── format.ts                      (r1, r2, fmtG, fmtKc, fmtMg, parseNum, clamp, uid, cap)
+│   │   ├── date.ts                        (dayKey, startOfToday, dayStartOffsetMs, fmtTime, fmtDate*, timeAgo, fmtDur, toLocalInput)
+│   │   ├── pharmacokinetics.ts            (calcActiveMitAtTime)
+│   │   ├── tolerance.ts                   (calcReceptorSensitivityScore, calcDailyToleranceHistory)
+│   │   ├── analytics.ts                   (getAnalyticsContext, calcDoseDistribution, calcIntervalHistory, calcContinuousPlasmaCurve, calcWeeklyTimeMatrix, calcStrainHistory, calcStrainDiversityIndex, calcTaperingTrajectory)
+│   │   ├── streaks.ts                     (calcLimitStreak, calcCleanStreak, calcWaterStreak, calcIntervalStreak)
+│   │   ├── achievements.ts                (checkAchievements, achUnlockedCount)
+│   │   ├── insights.ts                    (getSmartInsights)
+│   │   ├── tbreak.ts                      (tbreakInfo, startTbreak, endTbreak)
+│   │   ├── reconcile.ts                   (getReconcileCandidateDoses, applyReconciliation, undoReconciliation)
+│   │   ├── stock.ts                       (getActivePackage, getTotalStockG, getPackageDoses, dailyMap)
+│   │   └── exportImport.ts                (exportJSON, exportCSV, importJSON)
+│   │
+│   ├── hooks/
+│   │   ├── useTicker.ts                   (setInterval 20s, visibilitychange)
+│   │   ├── useKeyboardShortcuts.ts
+│   │   ├── useNotifications.ts
+│   │   ├── useHaptics.ts                  (navigator.vibrate)
+│   │   ├── useSounds.ts                   (AudioContext blip)
+│   │   └── useTheme.ts                    (applyTheme → CSS vars)
+│   │
+│   ├── components/
+│   │   ├── icons/
+│   │   │   ├── Icon.tsx                   (univerzální <Icon name size strokeWidth />)
+│   │   │   └── icons.tsx                  (mapa SVG path stringů)
+│   │   ├── charts/
+│   │   │   ├── PrecisionDial.tsx
+│   │   │   ├── ConcentricLimitsRing.tsx
+│   │   │   ├── MiniTodayTimeline.tsx
+│   │   │   ├── MiniActiveMitSparkline.tsx
+│   │   │   ├── SmoothBezierChart.tsx
+│   │   │   ├── MitragynineCurve.tsx
+│   │   │   ├── SpendingBarChart.tsx
+│   │   │   ├── ToleranceTrend.tsx
+│   │   │   ├── DoseHistogram.tsx
+│   │   │   ├── CircadianDayNight.tsx
+│   │   │   ├── StrainDonut.tsx
+│   │   │   ├── IntervalTrend.tsx
+│   │   │   ├── ComplianceRate.tsx
+│   │   │   ├── PlasmaKineticsContinuous.tsx
+│   │   │   ├── WeeklyMatrix.tsx
+│   │   │   ├── StrainEvolution.tsx
+│   │   │   ├── DiversityTrend.tsx
+│   │   │   ├── HydrationBalance.tsx
+│   │   │   ├── TBreakSimulator.tsx
+│   │   │   ├── TaperingPlan.tsx
+│   │   │   ├── TBreakRing.tsx
+│   │   │   ├── HeatmapGrid.tsx
+│   │   │   └── MiniWeekly.tsx
+│   │   ├── ui/
+│   │   │   ├── Card.tsx                   (.card)
+│   │   │   ├── BentoGrid.tsx
+│   │   │   ├── BentoSubgrid.tsx
+│   │   │   ├── Segment.tsx                (.seg)
+│   │   │   ├── Chip.tsx                   (.chip)
+│   │   │   ├── Button.tsx                 (.btn btn-primary / btn-ghost / btn-danger / btn-sm)
+│   │   │   ├── IconButton.tsx             (.icon-btn)
+│   │   │   ├── Switch.tsx                 (.switch s knob)
+│   │   │   ├── Input.tsx                  (.input + .inp-unit/inp-suf)
+│   │   │   ├── DeltaTag.tsx               (.delta-tag)
+│   │   │   ├── MeterTrack.tsx             (.bento-meter-track / fill)
+│   │   │   ├── Toast.tsx                  (#toasts – pill, optional action)
+│   │   │   ├── Badge.tsx
+│   │   │   └── SectionTitle.tsx
+│   │   ├── layout/
+│   │   │   ├── AppShell.tsx               (.app, safe-area insets)
+│   │   │   ├── TopHeader.tsx
+│   │   │   ├── PageTitle.tsx
+│   │   │   ├── BottomNav.tsx              (5 tlačítek + FAB)
+│   │   │   └── Backdrop.tsx
+│   │   ├── sheets/
+│   │   │   ├── Sheet.tsx                  (bottom sheet s drag-to-dismiss)
+│   │   │   └── ConfirmDialog.tsx
+│   │   └── modals/
+│   │       └── FullscreenModal.tsx
+│   │
+│   ├── screens/
+│   │   ├── Dashboard/
+│   │   │   ├── DashboardScreen.tsx
+│   │   │   ├── QuickActionRow.tsx
+│   │   │   ├── HudPills.tsx
+│   │   │   ├── SmartInsightBanner.tsx
+│   │   │   ├── ActiveTbreakCard.tsx
+│   │   │   ├── DailyLimitDial.tsx
+│   │   │   ├── TelemetryCard.tsx
+│   │   │   ├── TimelineCard.tsx
+│   │   │   ├── HydrationMiniCard.tsx
+│   │   │   ├── ReceptorMiniCard.tsx
+│   │   │   ├── TodayActivityCard.tsx
+│   │   │   └── StatsStrip.tsx
+│   │   ├── Stock/
+│   │   │   ├── StockScreen.tsx
+│   │   │   ├── StockKpi.tsx
+│   │   │   ├── StockFilterTabs.tsx
+│   │   │   └── PackageCard.tsx
+│   │   ├── History/
+│   │   │   ├── HistoryScreen.tsx
+│   │   │   ├── HistoryHeatmapCard.tsx
+│   │   │   ├── HistoryFilterCard.tsx
+│   │   │   ├── HistoryCalendar.tsx
+│   │   │   └── DoseRow.tsx
+│   │   ├── Analytics/
+│   │   │   ├── AnalyticsScreen.tsx
+│   │   │   ├── SubNav.tsx
+│   │   │   ├── tabs/
+│   │   │   │   ├── SummaryTab.tsx
+│   │   │   │   ├── IntervalsTab.tsx
+│   │   │   │   ├── StrainsTab.tsx
+│   │   │   │   ├── HealthTab.tsx
+│   │   │   │   └── AchievementsTab.tsx
+│   │   │   └── AnalyticsKpiStrip.tsx
+│   │   └── Settings/
+│   │       ├── SettingsScreen.tsx
+│   │       ├── AppearanceSection.tsx
+│   │       ├── DashboardLayoutSection.tsx
+│   │       ├── HistorySection.tsx
+│   │       ├── DoseModalSection.tsx
+│   │       ├── LimitsSection.tsx
+│   │       ├── PharmacokineticsSection.tsx
+│   │       ├── ToleranceSection.tsx
+│   │       ├── HydrationSection.tsx
+│   │       ├── DosingSection.tsx
+│   │       ├── BehaviorSection.tsx
+│   │       ├── InventorySection.tsx
+│   │       ├── TaperingSection.tsx
+│   │       ├── ModulesSection.tsx
+│   │       ├── BeveragesSection.tsx
+│   │       ├── StrainsSection.tsx
+│   │       ├── BackupSection.tsx
+│   │       └── AboutSection.tsx
+│   │
+│   ├── dose-modal/
+│   │   ├── DoseModal.tsx                  (fullscreen slide-up)
+│   │   ├── AmountStepper.tsx
+│   │   ├── StepSizeSeg.tsx
+│   │   ├── QuickAmountChips.tsx
+│   │   ├── LivePreviewCard.tsx
+│   │   ├── StrainChips.tsx
+│   │   ├── PackageSelector.tsx
+│   │   ├── BeverageChips.tsx
+│   │   ├── StarRating.tsx
+│   │   ├── EffectChips.tsx
+│   │   ├── TimeModeSeg.tsx
+│   │   ├── NoteField.tsx
+│   │   └── QuickNoteTags.tsx
+│   │
+│   ├── sheets-specific/
+│   │   ├── StrainSheet.tsx                (CRUD druhu + paleta swatch)
+│   │   ├── PackageSheet.tsx               (CRUD balení)
+│   │   ├── BeverageSheet.tsx              (CRUD nápoje)
+│   │   ├── ReconcileSheet.tsx             (dopočet balení)
+│   │   ├── HelpSheet.tsx                  (klávesové zkratky)
+│   │   └── OnboardingSheet.tsx
+│   │
+│   └── styles/
+│       ├── globals.css                    (:root, html, body, .app, .screen, .bottom-nav)
+│       ├── themes.css                     (body[data-theme="…"] variants)
+│       ├── glass.css                      (.card, .bento-tile, glassmorphism)
+│       ├── utilities.css                  (.hidden, .num, .clickable, .dot, privacy mode, density, font-scale)
+│       └── animations.css                 (@keyframes appleFade, toastPop)
+│
+├── index.html
+├── vite.config.ts
+├── tsconfig.json
+├── tsconfig.node.json
+├── package.json
+└── README.md
+```
+
+Pravidla pro strukturu: Každá obrazovka = složka. Každý velký modál/sheet = vlastní soubor. Grafy = samostatné komponenty v charts/. Žádný soubor by neměl přesáhnout ~400 řádků; rozděluj.
+
+---
+
+4. Datový model (TypeScript)
+
+```typescript
+// types/index.ts
+
+export type EffectType = 'energy' | 'focus' | 'relax' | 'pain' | 'sleep';
+export type ThemeId = 'emerald' | 'cyan' | 'purple' | 'amber' | 'rose' | 'gold' | 'custom';
+export type PackageStatus = 'active' | 'unopened' | 'finished';
+export type ReconcileMethod = 'proportional' | 'uniform';
+export type DialStyle = 'precision' | 'concentric';
+export type Density = 'normal' | 'compact';
+export type FontScale = 'normal' | 'large' | 'xlarge';
+export type StartTab = 'dashboard' | 'stock' | 'history' | 'analytics';
+export type AnalyticsSubTab = 'summary' | 'intervals' | 'strains' | 'health' | 'achievements';
+
+export interface Strain {
+  id: string;
+  name: string;
+  pricePerG: number;
+  packageSizeG: number;
+  mitPct: number;          // % MIT (typicky 1.45)
+  sevenOhPct: number;      // % 7-OH (typicky 0.025)
+  color: string;           // hex
+  note: string;
+  createdAt: number;       // timestamp ms
+}
+
+export interface Package {
+  id: string;
+  strainId: string;
+  name: string;
+  initialWeightG: number;
+  remainingWeightG: number;
+  costTotal: number;
+  pricePerG: number;
+  status: PackageStatus;
+  openedAt: number | null;
+  finishedAt: number | null;
+  note: string;
+  calibrated: boolean;
+  reconciliation?: {
+    date: number;
+    method: ReconcileMethod;
+    targetWeightG: number;
+    diff: number;          // pozitivní = dávky navýšeny, negativní = sníženy
+    factor: number;
+    delta: number;
+    doseIds: string[];
+    originalAmounts: Record<string, number>;
+  };
+}
+
+export interface Beverage {
+  id: string;
+  name: string;
+  icon: string;   // emoji
+  cost: number;
+  note: string;
+  color?: string;
+}
+
+export interface Dose {
+  id: string;
+  strainId: string;
+  strainName: string;      // snapshot pro historii
+  strainColor: string;     // snapshot
+  packageId: string | null;
+  amountG: number;
+  timestamp: number;
+  pricePerG: number;
+  cost: number;            // amountG * pricePerG
+  beverageId: string;
+  beverageName: string;
+  beverageIcon: string;
+  beverageCost: number;
+  rating: number;          // 0–5
+  effect: EffectType;
+  mitPct: number;
+  sevenOhPct: number;
+  mitMg: number;           // amountG * mitPct * 10
+  sevenOhMg: number;       // amountG * sevenOhPct * 10
+  note: string;
+  // Calibration (nastaveno po dopočtu):
+  calibrated?: boolean;
+  calibrationDiff?: number;
+  originalAmountG?: number;
+}
+
+export interface WaterLog {
+  id: string;
+  timestamp: number;
+  amountMl: number;
+}
+
+export interface TBreakRecord {
+  id: string;
+  startedAt: number;
+  endedAt: number;
+  goalHours: number;
+  hoursDone: number;
+  completed: boolean;
+}
+
+export interface Settings { /* viz sekce 5 */ }
+
+export interface AppState {
+  settings: Settings;
+  strains: Strain[];
+  packages: Package[];
+  beverages: Beverage[];
+  doses: Dose[];
+  waterLogs: WaterLog[];
+  tbreakHistory: TBreakRecord[];
+  achievements: Record<string, number>;   // id → timestamp odemčení
+}
+
+export interface HistoryFilterState {
+  strain: string;              // 'all' | strainId
+  days: number | 'all';
+  q: string;
+  filterDayKey: string | null;
+  view: 'list' | 'cal';
+  calMonth: string | null;     // 'YYYY-M'
+}
+
+export interface AnalyticsContext {
+  days: number;
+  curStart: number;
+  curEnd: number;
+  curDoses: Dose[];
+  priorDoses: Dose[];
+  curG: number;
+  priorG: number;
+  curMit: number;
+  priorMit: number;
+  cur7Oh: number;
+  prior7Oh: number;
+  curCost: number;
+  priorCost: number;
+  curKratomCost: number;
+  curBevCost: number;
+  curAvgG: number;
+  priorAvgG: number;
+  curAvgDoseG: number;
+  priorAvgDoseG: number;
+  daily: Array<{ ts: number; g: number; mitMg: number; sevenOhMg: number; kratomCost: number; bevCost: number; dosesCount: number }>;
+  peakDayG: number;
+  peakDayMit: number;
+  activeDaysCount: number;
+  last7Days: any[];
+  last7AvgG: number;
+  ma7vsAvgDiff: number;
+  stockTotalG: number;
+  runwayDays: number | string;
+  projAnnualKg: number;
+  projAnnualKc: number;
+  costPerG: number;
+  costPerDose: number;
+  mgPerKg: number;
+  toleranceHistory: Array<{ ts: number; score: number }>;
+  curTolScore: number;
+  recPerDay: number;
+  daysTo90: number;
+  doseDist: ReturnType<typeof calcDoseDistribution>;
+  strainParts: Array<{ name: string; color: string; g: number; cost: number; count: number; avgRating: number | null }>;
+  sortedCurDoses: Dose[];
+  avgCooldownH: number | null;
+  st: Settings;
+  L: number;
+  hardL: number;
+  B: number;
+}
+```
+
+---
+
+5. Výchozí nastavení (DEFAULT_SETTINGS)
+
+Kompletní mapa — všechny klíče musí existovat v typu Settings a v persist výchozím stavu:
+
+```typescript
+const DEFAULT_SETTINGS: Settings = {
+  currency: 'Kč',
+  theme: 'emerald',
+  // Limity & rozpočty
+  dailyLimitG: 10,
+  dailyHardLimitG: 14,
+  dailyBudgetKc: 150,
+  monthlyBudgetKc: 4500,
+  cooldownMin: 240,
+  haptics: true,
+  // Farmakokinetika
+  bodyWeightKg: 75,
+  mitHalfLifeAlphaH: 3.8,
+  mitHalfLifeBetaH: 24.0,
+  mitTMaxH: 1.2,
+  defaultMitPct: 1.45,
+  defaultSevenOhPct: 0.025,
+  // Tolerance
+  toleranceRecoveryPerDay: 15,
+  tolerancePenaltyLimit: 30,
+  tolerancePenaltyInterval: 35,
+  toleranceConsecutiveDaysPenalty: 15,
+  tbreakActive: false,
+  tbreakStartedAt: null,
+  tbreakGoalHours: 72,
+  // Tapering
+  taperingEnabled: false,
+  taperingStartG: 12,
+  taperingTargetG: 4,
+  taperingStepG: 0.5,
+  taperingDaysInterval: 3,
+  taperingStartedAt: null,
+  taperingWeeklyReductionPct: 10,
+  // Hydration
+  dailyWaterGoalMl: 2500,
+  waterPerGramKratomMl: 200,
+  waterQuickMl1: 250,
+  waterQuickMl2: 500,
+  // Dosing
+  defaultDoseG: 2.0,
+  quickDosePresets: [1, 2, 2.5, 3],
+  autoSelectActivePackage: true,
+  doseStepDefault: 0.5,
+  // Inventory
+  defaultReconcileMethod: 'proportional',
+  reconcileAutoIncludeUnassigned: false,
+  lowStockWarningG: 20,
+  defaultPackageWeightG: 100,
+  defaultPricePerG: 8.0,
+  // Module switches
+  showAlkaloids: true,
+  showFinances: true,
+  enableBeverages: true,
+  enableHydration: true,
+  enableMoodRating: true,
+  enableHeatmap: true,
+  enableQuickLog: true,
+  enablePharmacokinetics: true,
+  enableReceptorScore: true,
+  enableHourlyDistribution: true,
+  enableStrainRotationAdvice: true,
+  enableAchievements: true,
+  enableCalendarView: true,
+  enableSmartInsights: true,
+  enableNotifications: false,
+  // Analytics
+  intervalComplianceThresholdH: 4.0,
+  diversityWarningThreshold: 3,
+  defaultAnalyticsSubTab: 'summary',
+  dashboardShowSparklines: true,
+  dashboardDialStyle: 'precision',
+  // Privacy & appearance
+  privacyMode: false,
+  uiDensity: 'normal',
+  fontScale: 'normal',
+  startTab: 'dashboard',
+  timeFormat24: true,
+  weekStartsMonday: true,
+  customAccentHex: '#30D158',
+  // Behavior
+  confirmBeforeDelete: true,
+  soundsEnabled: false,
+  dayStartHour: 0,
+  dashRecentDosesCount: 2,
+  // State shortcuts (persist posledních hodnot)
+  lastStrainId: null,
+  lastAmount: 2,
+  lastBeverageId: 'bev_water',
+  // Backup
+  lastBackupAt: null,
+  autoBackupReminderDays: 7,
+  onboarded: false,
+  // Dashboard layout
+  dashShowQuickRow: true,
+  dashShowHud: true,
+  dashShowInsight: true,
+  dashShowHero: true,
+  dashShowTelem: true,
+  dashShowTimeline: true,
+  dashShowWater: true,
+  dashShowActivity: true,
+  dashShowStats: true,
+  // History
+  histCompactRows: false,
+  histShowFilters: true,
+  // Dose modal
+  modalShowPreview: true,
+  modalShowMitEstimate: true,
+  quickLogConfirm: false,
+  modalShowNoteTags: true,
+};
+```
+
+Konstanty
+
+```typescript
+// themes.ts
+export const THEMES = [
+  { id: 'emerald', name: 'Emerald',      hex: '#30D158' },
+  { id: 'cyan',    name: 'Cyber Cyan',   hex: '#64D2FF' },
+  { id: 'purple',  name: 'Royal Violet', hex: '#BF5AF2' },
+  { id: 'amber',   name: 'Warm Amber',   hex: '#FF9F0A' },
+  { id: 'rose',    name: 'Neon Rose',    hex: '#FF375F' },
+  { id: 'gold',    name: 'Solar Gold',   hex: '#FFD60A' },
+  { id: 'custom',  name: 'Vlastní',      hex: null },
+];
+
+// effects.ts
+export const EFFECT_MAP = {
+  energy: { label: 'Energie',      icon: '⚡' },
+  focus:  { label: 'Soustředění',   icon: '🎯' },
+  relax:  { label: 'Relaxace',     icon: '🍃' },
+  pain:   { label: 'Úleva',        icon: '🛡️' },
+  sleep:  { label: 'Spánek',       icon: '🌙' },
+};
+
+// palette.ts
+export const PALETTE = ['#30D158','#34C759','#007AFF','#5856D6','#AF52DE','#FF2D55','#FF3B30','#FF9500','#FFCC00','#8E8E93','#E5E5EA'];
+
+// Days
+export const WD_SHORT = ['Po','Út','St','Čt','Pá','So','Ne'];
+
+export const LS_KEY = 'kratom-tracker-v3';
+export const LEGACY_LS_KEY = 'kratom-tracker-v2';
+export const APP_VERSION = '4.1';
+```
+
+---
+
+6. Výchozí data (seeds)
+
+Aplikace musí mít při prvním spuštění tato seed data v přesně tomto pořadí a s těmito hodnotami.
+
+seedStrains() (4 druhy)
+
+id name pricePerG packageSizeG mitPct sevenOhPct color note
+s_gbo Zelený Borneo 8 100 1.55 0.025 #30D158 Vyvážený střed a čistá nálada
+s_bth Bílý Thailand 7 50 1.45 0.02 #E5E5EA Ranní energie a soustředění
+s_rba Červený Bali 7 50 1.20 0.035 #FF453A Večerní zklidnění a úleva
+s_yvi Žlutý Vietnam 8 50 1.35 0.02 #FF9F0A Pohoda a relax
+
+Všechny createdAt = Date.now().
+
+seedPackages(strains) (3 balení)
+
+id strainId name initialWeightG remainingWeightG costTotal pricePerG status openedAt note
+pkg_gbo s_gbo Velké balení 100g 100 76.5 800 8 active now − 4 dny Šarže G-2024
+pkg_bth s_bth Sáček 50g 50 41 350 7 active now − 2 dny (prázdné)
+pkg_rba s_rba Zásoba Bali 50g 50 50 350 7 unopened null Nerozbaleno
+
+finishedAt: null, calibrated: false.
+
+seedBeverages() (5 nápojů)
+
+id name icon cost note color
+bev_water Voda 💧 0 Základní tekutina #0A84FF
+bev_orange Pomerančový džus 🍊 15 Zjemňuje chuť a podporuje vstřebávání #FF9F0A
+bev_grapefruit Grepový džus 🍋 20 Přírodní podpora #FFD60A
+bev_tea Teplý bylinný čaj 🍵 8 Šetrný k žaludku #30D158
+bev_soda Limonáda / Kofola 🥤 18 Sladký nápoj #BF5AF2
+
+seedDoses(strains, packages) (14 dávek)
+
+Vytvoř 14 dávek s těmito parametry (všechny calibrated: false). Reference now = Date.now(), day = 86400000, hour = 3600000:
+
+# strainId packageId amountG timestamp cost bevId rating effect note
+1 s_bth pkg_bth 2.0 now − 3.5h 14 bev_orange 5 energy Ranní probuzení
+2 s_gbo pkg_gbo 2.5 now − 8h 20 bev_water 4 focus Pracovní fokus
+3 s_gbo pkg_gbo 2.0 now − 1d − 5h 16 bev_water 4 focus (prázdné)
+4 s_rba null 3.0 now − 1d − 10h 21 bev_tea 5 relax Pohodový večer
+5 s_bth pkg_bth 2.5 now − 2d − 4h 17.5 bev_orange 4 energy (prázdné)
+6 s_gbo pkg_gbo 2.0 now − 3d − 6h 16 bev_water 4 focus (prázdné)
+7 s_bth pkg_bth 2.5 now − 1d − 8h 17.5 bev_orange 5 energy (prázdné)
+8 s_bth pkg_bth 2.0 now − 2d − 9h 14 bev_water 4 energy (prázdné)
+9 s_gbo pkg_gbo 3.0 now − 1d − 2h 24 bev_water 4 focus (prázdné)
+10 s_gbo pkg_gbo 3.0 now − 2d − 2h 24 bev_water 5 focus (prázdné)
+11 s_gbo pkg_gbo 2.5 now − 2d − 7h 20 bev_tea 4 relax (prázdné)
+12 s_gbo pkg_gbo 3.0 now − 3d − 2h 24 bev_water 4 focus (prázdné)
+13 s_gbo pkg_gbo 2.5 now − 4d − 4h 20 bev_water 4 focus (prázdné)
+14 s_gbo pkg_gbo 3.0 now − 4d − 9h 24 bev_water 5 focus Otevření balení
+
+Každá dávka má dopočítané: beverageCost z beverage, mitPct/sevenOhPct ze strain, mitMg = amountG × mitPct × 10, sevenOhMg = amountG × sevenOhPct × 10, pricePerG z package (nebo strain fallback).
+
+seedWaterLogs()
+
+```typescript
+[
+  { id: 'w_1', timestamp: Date.now() - 2 * 3600000, amountMl: 500 },
+  { id: 'w_2', timestamp: Date.now() - 6 * 3600000, amountMl: 400 },
+  { id: 'w_3', timestamp: Date.now() - 86400000,    amountMl: 1500 },
+]
+```
+
+defaultState()
+
+```typescript
+{
+  settings: { ...DEFAULT_SETTINGS },
+  strains: seedStrains(),
+  packages: seedPackages(strains),
+  beverages: seedBeverages(),
+  doses: seedDoses(strains, packages),
+  waterLogs: seedWaterLogs(),
+  tbreakHistory: [],
+  achievements: {},
+}
+```
+
+---
+
+7. Persistence & migrace
+
+Load
+
+1. Zkus localStorage.getItem('kratom-tracker-v3')
+2. Pokud chybí, zkus legacy 'kratom-tracker-v2'
+3. Pokud obojí chybí nebo parse selže → defaultState()
+
+Migrace (migrateState)
+
+Po načtení vždy spusť migrateState(state):
+
+· state.settings = { ...DEFAULT_SETTINGS, ...state.settings } (merge – nové klíče vždy doplněny)
+· Pokud quickDosePresets je string → rozparsuj na pole čísel
+· Pokud není pole nebo prázdné → [1, 2, 2.5, 3]
+· Pokud chybí strains/packages/beverages/doses/waterLogs/tbreakHistory → seed
+· Pokud chybí achievements → {}
+· Pokud tbreakActive je true ale tbreakStartedAt null → tbreakActive = false
+· Pokud chybí bev_water v beverages → unshift
+· Každá dávka: sanitizuj čísla (amountG, pricePerG, cost, beverageCost, timestamp), dopočítej mitMg/sevenOhMg pokud chybí
+· Aplikuj theme (applyTheme), aplikuj privacy mode
+
+Save
+
+Zustand persist (nebo ručně localStorage.setItem(LS_KEY, JSON.stringify(state))). Ukládej po každé mutaci. JSON serializace musí být plně kompatibilní s originálem.
+
+Verzování
+
+persist verze = 3 (LS klíč to reflektuje). Migrace z v2 ošetři stejně jako výše.
+
+---
+
+8. State management (Zustand)
+
+Jeden centrální store useAppStore obsahující celý AppState + akce:
+
+```typescript
+interface AppStore extends AppState {
+  // Doses
+  addDose: (dose: Dose) => void;
+  updateDose: (id: string, patch: Partial<Dose>) => void;
+  deleteDose: (id: string) => void;
+  quickLogDose: (amountG: number, strainId: string) => void;
+
+  // Water
+  addWater: (ml: number) => void;
+
+  // Strains / Packages / Beverages
+  addStrain, updateStrain, deleteStrain
+  addPackage, updatePackage, deletePackage
+  addBeverage, updateBeverage, deleteBeverage
+
+  // Settings
+  updateSettings: (patch: Partial<Settings>) => void;
+
+  // Achievements
+  unlockAchievement: (id: string) => void;
+
+  // T-Break
+  startTbreak: () => void;
+  endTbreak: (completed: boolean) => void;
+
+  // Reconcile
+  applyReconciliation: (pkgId: string, selectedDoseIds: Set<string>, targetG: number, method: ReconcileMethod, calibrate: boolean) => void;
+  undoReconciliation: (pkgId: string) => void;
+
+  // Backup
+  markBackupDone: () => void;
+  replaceState: (newState: AppState) => void;
+  resetAll: () => void;
+}
+```
+
+Nepoužívej React Context pro celý state — bude zbytečně překreslovat. Zustand selektory (useAppStore(s => s.doses)) jsou nutné pro výkon.
+
+Pro dočasné UI stavy (otevřený modál, aktuální tab, filtry historie) můžeš použít buď Zustand (bez persist) nebo lokální useState v App.tsx + React Context pro sdílení.
+
+---
+
+9. Doménová logika — kompletní přepis
+
+Všechny níže uvedené funkce musí být implementovány 1:1. Čísla a zaokrouhlení musí být přesná.
+
+9.1 Utility (lib/format.ts, lib/date.ts)
+
+```typescript
+export const r1 = (v: number) => Math.round((v || 0) * 10) / 10;
+export const r2 = (v: number) => Math.round((v || 0) * 100) / 100;
+export const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
+export const uid = (p: string) => p + '_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+export const cap = (s: string) => s ? s.charAt(0).toUpperCase() + s.slice(1) : '';
+export const parseNum = (v: unknown): number | null => {
+  const x = parseFloat(String(v).replace(',', '.'));
+  return isNaN(x) ? null : x;
+};
+
+export const fmtG  = (n: number) => r2(n).toLocaleString('cs-CZ', { maximumFractionDigits: 2 });
+export const fmtKc = (n: number) => r2(n).toLocaleString('cs-CZ', { maximumFractionDigits: 1 }) + ' ' + (state.settings.currency || 'Kč');
+export const fmtMg = (n: number) => r2(n).toLocaleString('cs-CZ', { maximumFractionDigits: 1 }) + ' mg';
+
+// Date — POZOR: podporuje posunutou půlnoc (dayStartHour)
+export function dayStartOffsetMs(): number {
+  return clamp(state.settings.dayStartHour || 0, 0, 12) * 3600e3;
+}
+export function dayKey(ts: number): string {
+  // 'YYYY-MM-DD' s ohledem na dayStartOffsetMs
+  const off = dayStartOffsetMs();
+  const d = new Date(ts - off);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+export function startOfToday(): number { /* dle dayStartOffsetMs */ }
+export function startOfDay(ts: number): number { /* dle dayStartOffsetMs */ }
+export function fmtTime(ts: number): string { /* 24h nebo 12h dle timeFormat24 */ }
+export function fmtDateShort(ts: number): string { /* '21. 3.' bez mezer */ }
+export function fmtDateLong(ts: number): string  { /* 'čtvrtek 21. března' */ }
+export function fmtDateMid(ts: number): string   { /* '21. 3. čt' */ }
+export function timeAgo(ts: number): string      { /* 'právě teď' / 'před X min' / 'před X h' / 'před X d' */ }
+export function fmtDur(ms: number): string       { /* '2h 30m' / '45 min' */ }
+export function toLocalInput(ts: number): string { /* 'YYYY-MM-DDTHH:mm' */ }
+```
+
+DŮLEŽITÉ: dayKey, startOfToday, startOfDay musí respektovat settings.dayStartHour. Toto je klíčové pro noční dávky. Všechny "streak" funkce, heatmapy, kalendář, denní součty to používají.
+
+9.2 Stock / Daily mapy (lib/stock.ts)
+
+```typescript
+export function dailyMap(): Record<string, number> {
+  const m: Record<string, number> = {};
+  state.doses.forEach(d => {
+    const k = dayKey(d.timestamp);
+    m[k] = r2((m[k] || 0) + d.amountG);
+  });
+  return m;
+}
+export function getTotalStockG(): number {
+  return state.packages.filter(p => p.status !== 'finished').reduce((a, p) => a + Math.max(0, p.remainingWeightG), 0);
+}
+export function getActivePackage(strainId: string): Package | null {
+  return state.packages.find(p => p.strainId === strainId && p.status === 'active') || null;
+}
+export function getPackageDoses(pkgId: string): Dose[] { /* doses.filter(d => d.packageId === pkgId) */ }
+```
+
+9.3 Streaky (lib/streaks.ts)
+
+```typescript
+// Počet dní v řadě pod denním limitem (ignoruje prázdné dny)
+export function calcLimitStreak(): number {
+  const dm = dailyMap(), L = state.settings.dailyLimitG || 0, t0 = startOfToday();
+  let streak = 0;
+  for (let i = 0; i < 400; i++) {
+    const val = dm[dayKey(t0 - i * 864e5)] || 0;
+    if (L > 0 && val <= L && val > 0) streak++;
+    else if (val === 0) continue;
+    else break;
+  }
+  return streak;
+}
+
+// Počet dní v řadě ÚPLNĚ bez dávky (od prvního dne s dávkou zpět)
+export function calcCleanStreak(): number { /* … viz originál */ }
+
+// Počet dní v řadě splněného vodního cíle
+export function calcWaterStreak(): number {
+  const goal = state.settings.dailyWaterGoalMl || 2500, t0 = startOfToday();
+  const wm = {};
+  state.waterLogs.forEach(w => { const k = dayKey(w.timestamp); wm[k] = (wm[k] || 0) + (w.amountMl || 0); });
+  let streak = 0;
+  const todayOk = (wm[dayKey(t0)] || 0) >= goal;
+  for (let i = todayOk ? 0 : 1; i < 400; i++) {
+    if ((wm[dayKey(t0 - i * 864e5)] || 0) >= goal) streak++;
+    else break;
+  }
+  return streak;
+}
+
+// Počet dávek v řadě jejichž rozestup je ≥ intervalComplianceThresholdH
+export function calcIntervalStreak(): number {
+  const th = state.settings.intervalComplianceThresholdH || 4;
+  const arr = [...state.doses].sort((a, b) => b.timestamp - a.timestamp);
+  let streak = 0;
+  for (let i = 0; i < arr.length - 1; i++) {
+    const gapH = (arr[i].timestamp - arr[i + 1].timestamp) / 3600e3;
+    if (gapH >= th) streak++;
+    else break;
+  }
+  return streak;
+}
+```
+
+9.4 Farmakokinetika (lib/pharmacokinetics.ts)
+
+Dvoufázový eliminační model s absorpční fází:
+
+```typescript
+export function calcActiveMitAtTime(targetTs: number): number {
+  let active = 0;
+  const { mitHalfLifeAlphaH: aH, mitHalfLifeBetaH: bH, mitTMaxH: tmaxH } = state.settings;
+  state.doses.forEach(d => {
+    const diffH = (targetTs - d.timestamp) / 3600000;
+    if (diffH < 0 || diffH > 96) return;
+    const doseMit = d.mitMg || (d.amountG * (d.mitPct || 1.45) * 10);
+    let fraction: number;
+    if (diffH < tmaxH) {
+      fraction = Math.sin((diffH / Math.max(0.1, tmaxH)) * (Math.PI / 2));
+    } else {
+      const postMaxH = diffH - tmaxH;
+      fraction = 0.7 * Math.pow(0.5, postMaxH / aH) + 0.3 * Math.pow(0.5, postMaxH / bH);
+    }
+    active += doseMit * fraction;
+  });
+  return r2(active);
+}
+```
+
+9.5 Tolerance / Citlivost receptorů (lib/tolerance.ts)
+
+Vrací 0–100. Startuje na 100, odečítá penalty, přičítá recovery.
+
+```typescript
+export function calcReceptorSensitivityScore(targetTs = Date.now()): number {
+  const st = state.settings;
+  const L = st.dailyLimitG || 10;
+  const pLimit  = st.tolerancePenaltyLimit ?? 30;
+  const pInt    = st.tolerancePenaltyInterval ?? 35;
+  const pStreak = st.toleranceConsecutiveDaysPenalty ?? 15;
+  const recPerDay = st.toleranceRecoveryPerDay ?? 15;
+
+  let score = 100;
+  const t0 = startOfDay(targetTs);
+  const dayEnd = t0 + 864e5;
+
+  const historyDoses = state.doses
+    .filter(d => d.timestamp <= targetTs)
+    .sort((a, b) => b.timestamp - a.timestamp);
+  const todayDoses = historyDoses.filter(d => d.timestamp >= t0 && d.timestamp < dayEnd);
+  const todayG = todayDoses.reduce((a, d) => a + d.amountG, 0);
+
+  // Penalizace za krátké rozestupy (prvních 5 intervalů)
+  if (historyDoses.length >= 2) {
+    const intervals: number[] = [];
+    for (let i = 1; i < Math.min(historyDoses.length, 6); i++) {
+      intervals.push((historyDoses[i - 1].timestamp - historyDoses[i].timestamp) / 3600e3);
+    }
+    const avgInt = intervals.reduce((a, b) => a + b, 0) / intervals.length;
+    if (avgInt < 2.5) score -= pInt;
+    else if (avgInt < 4.0) score -= Math.round(pInt * 0.5);
+  }
+
+  // Penalizace za překročení denního limitu
+  if (L > 0 && todayG > L) score -= pLimit;
+  else if (L > 0 && todayG > L * 0.8) score -= Math.round(pLimit * 0.5);
+
+  // Po sobě jdoucí dny s dávkou vs. čisté dny (posledních 7 dní)
+  let consecutiveDays = 0, cleanDays = 0;
+  for (let i = 0; i < 7; i++) {
+    const s = t0 - i * 864e5, e = s + 864e5;
+    const hadDose = state.doses.some(d => d.timestamp >= s && d.timestamp < e);
+    if (hadDose) { if (cleanDays === 0) consecutiveDays++; }
+    else         { if (consecutiveDays === 0) cleanDays++; }
+  }
+  if (consecutiveDays >= 7) score -= pStreak;
+  else if (consecutiveDays >= 4) score -= Math.round(pStreak * 0.5);
+  if (cleanDays > 0) score += cleanDays * recPerDay;
+
+  return clamp(Math.round(score), 10, 100);
+}
+
+export function calcDailyToleranceHistory(days: number): Array<{ ts: number; score: number }> {
+  // Pro každý den (od nejstaršího) spočítej skóre k 12:00 toho dne
+}
+```
+
+9.6 T-Break (lib/tbreak.ts)
+
+```typescript
+export interface TBreakInfo {
+  active: boolean;
+  goalMs: number;
+  elapsedMs: number;
+  pct: number;
+  remainMs: number;
+  done: boolean;
+  startedAt?: number;
+}
+
+export function tbreakInfo(now = Date.now()): TBreakInfo {
+  const st = state.settings;
+  const goalMs = (st.tbreakGoalHours || 72) * 3600e3;
+  if (!st.tbreakActive || !st.tbreakStartedAt) {
+    return { active: false, goalMs, elapsedMs: 0, pct: 0, remainMs: goalMs, done: false };
+  }
+  const elapsedMs = Math.max(0, now - st.tbreakStartedAt);
+  return {
+    active: true,
+    goalMs,
+    elapsedMs,
+    pct: clamp(Math.round((elapsedMs / goalMs) * 100), 0, 100),
+    remainMs: Math.max(0, goalMs - elapsedMs),
+    done: elapsedMs >= goalMs,
+    startedAt: st.tbreakStartedAt,
+  };
+}
+```
+
+Start (s confirm dialogem): tbreakActive = true; tbreakStartedAt = Date.now(). Toast "T-Break spuštěn 💪". Zvuk 880Hz.
+
+End (s confirm dialogem): push do tbreakHistory s { id, startedAt, endedAt, goalHours, hoursDone: r1(elapsedMs/3600e3), completed }, reset tbreakActive = false, tbreakStartedAt = null. Toast "🏆 T-Break splněn!" při completed.
+
+TBreakRing = kruhový SVG progress s stroke-dashoffset podle pct.
+
+9.7 Úspěchy (lib/achievements.ts)
+
+14 definic, každá s { id, icon, name, desc, target, get: () => number }:
+
+id icon name desc target get()
+first_dose 🌱 První záznam Zapiš svou úplně první dávku. 1 state.doses.length
+doses_50 📒 Pečlivý deník Zaznamenej celkem 50 dávek. 50 state.doses.length
+doses_200 📚 Archivář Zaznamenej celkem 200 dávek. 200 state.doses.length
+streak_3 🎯 Rozjezd disciplíny 3 dny v řadě pod denním limitem. 3 calcLimitStreak()
+streak_7 🔥 Týden v limitech 7 dní v řadě pod denním limitem. 7 calcLimitStreak()
+streak_30 👑 Mistr disciplíny 30 dní v řadě pod denním limitem. 30 calcLimitStreak()
+clean_3 🌿 Čistý víkend+ 3 dny v kuse úplně bez dávky. 3 calcCleanStreak()
+water_7 💧 Hydratační rytmus 7 dní po sobě splněný denní cíl vody. 7 calcWaterStreak()
+strains_5 🌈 Kolektor odrůd Použij alespoň 5 různých druhů. 5 new Set(doses.map(d => d.strainId).filter(Boolean)).size
+budget_14 💰 Spořivá dvoutýdenní 14 dní v řadě s útratou pod denním rozpočtem. 14 vlastní logika (viz níže)
+interval_pro ⏱️ Pán rozestupů 10 dávek v řadě se zdrženlivostí nad prahem. 10 calcIntervalStreak()
+tbreak_done 🧘 Reset receptorů Dokonči jednu plnou T-Break pauzu. 1 tbreakHistory.filter(t => t.completed).length
+tbreak_2 🧠 Veterán pauz Dokonči 2 plné T-Break pauzy. 2 totéž
+backup_pro 💾 Data v bezpečí Proveď aspoň jednu zálohu dat (export). 1 lastBackupAt ? 1 : 0
+
+Pro budget_14: pokud dailyBudgetKc <= 0 → 0. Jinak pro každý den (od dneška zpět) spočítej cost day map. Počítej dokud v <= B && v > 0 (prázdné dny continue), jinak break.
+
+checkAchievements() – spustí se po každé mutaci (nebo v tickeru). Pro každý odemčený nový úspěch: state.achievements[id] = Date.now(), toast 🏆 Úspěch odemčen: ${name} s 400ms staggered delay, zvuk 988Hz.
+
+9.8 Chytré postřehy (lib/insights.ts)
+
+getSmartInsights(ctx: AnalyticsContext): Insight[] vrací max 6 položek { icon, cls: 'good'|'warn'|'danger', text }. Podmínky:
+
+1. Změna průměru ≥ ±15 % vs předchozí období → warn (nahoru) / good (dolů)
+2. Peak den nad limitem → warn
+3. Projekce měsíční útraty (curCost/days × 30.44 vs monthlyBudgetKc) → good/warn/danger podle % překročení
+4. Runway skladu ≤ 14 dní → warn / ≤ 7 dní danger
+5. Průměrný cooldown < threshold → warn, jinak good
+6. mg MIT / kg > 1.5 → warn
+7. Rotace odrůd – streak ≥ diversityWarningThreshold → warn
+8. Citlivost receptorů < 60 → danger, ≥ 90 → good
+9. Žádné dávky v období → good "Čisté období"
+
+9.9 Analytika (lib/analytics.ts)
+
+getAnalyticsContext() – hlavní agregátor. Vstup: anaPeriod (7/14/30/90/'all'). Pro 'all' → vypočítej days z nejstarší dávky, min 7, fallback 30.
+
+Vrátí AnalyticsContext (viz types). Klíčové výpočty:
+
+· curDoses = doses v [curStart, curEnd), priorDoses v předchozím stejně dlouhém okně
+· Součty curG, priorG, curMit, cur7Oh, curCost, curKratomCost, curBevCost
+· daily[] – pole po dnech s rozpad na g/MIT/7-OH/cost/bevCost/dosesCount
+· peakDayG, peakDayMit, activeDaysCount
+· last7AvgG, ma7vsAvgDiff
+· stockTotalG, runwayDays
+· projAnnualKg = curAvgG * 365 / 1000, projAnnualKc = curCost / days * 365
+· costPerG, costPerDose
+· mgPerKg = (curMit / days) / bodyWeightKg
+· toleranceHistory (calcDailyToleranceHistory), curTolScore, daysTo90
+· doseDist (calcDoseDistribution)
+· strainParts – agregované po druzích s avgRating
+· avgCooldownH – průměrný interval mezi po sobě jdoucími dávkami (max 24h)
+
+calcDoseDistribution(doses) – 5 bins:
+
+· < 1.5 g (var(--cyan))
+· 1.5 – 2.4 g (var(--accent))
+· 2.5 – 3.4 g (#ffcc00)
+· 3.5 – 4.9 g (var(--warning))
+· ≥ 5.0 g (var(--danger))
+
+Vrací { bins, total, median, mode, stdDev, mean }.
+
+calcIntervalHistory(doses, days) – pro každý den:
+
+· avgH, minH, maxH (intervaly uvnitř dne)
+· overnightH (interval od poslední dávky předchozího dne k prvnímu dnešnímu)
+· compliancePct – % intervalů ≥ threshold
+
+Vrací { dailyHistory[], stats: { avgGapH, minGapH, maxGapH, medianGapH, avgNightGapH, compliancePct, totalIntervals, threshH } }.
+
+calcContinuousPlasmaCurve(doses, days) – spojitá křivka MIT hladiny po hodinách (step = max(1, totalHours/55)). Vrací { points: [{ts, mg}], maxMg, avgMg, currentMg }.
+
+calcWeeklyTimeMatrix(doses) – 7×24 matice počtů dávek (Po=0..Ne=6, hodiny 0..23). Vrací { matrix, maxCount, totalCount }.
+
+calcStrainHistory(doses, days) – daily[] s rozkladem podle strainId + activeStrains[] (součty + avg rating).
+
+calcStrainDiversityIndex(doses) – Shannon entropy H', normalizovaný na pct. Detekuje streak (kolik posledních dávek stejného druhu). Klasifikace:
+
+· pct < 35 NEBO streak ≥ threshold+1 → "Nízká rotace (riziko)" (danger)
+· pct < 70 NEBO streak ≥ threshold → "Střední rotace" (mid)
+· jinak "Výborná rotace" (opt)
+
+Vrací i topStrainName, topStrainPct, activeStrainsCount.
+
+calcTaperingTrajectory(days, startG, targetG, reductionPct, dailyActual) – trajektorie s týdenní redukcí (weeklyFactor = 1 - reductionPct/100). Vrací trajectory[], savedG, savedKc (na základě defaultPricePerG), annualSavingsG/Kc.
+
+9.10 Dopočet balení (lib/reconcile.ts)
+
+Kandidátní dávky pro dopočet:
+
+```typescript
+function getReconcileCandidateDoses(pkg: Package): Dose[] {
+  const pkgDoses = state.doses.filter(d => d.packageId === pkg.id);
+  const unassigned = state.doses.filter(d => !d.packageId && d.strainId === pkg.strainId);
+  const all = includeUnassigned ? [...pkgDoses, ...unassigned] : pkgDoses;
+  return all.sort((a, b) => b.timestamp - a.timestamp);
+}
+```
+
+applyReconciliation:
+
+1. sumSelected = Σ vybraných amountG
+2. diff = targetWeightG - sumSelected
+3. factor = targetWeightG / sumSelected (pokud > 0)
+4. delta = diff / selectedDoses.length
+5. Pro každou vybranou dávku:
+   · originalAmountG = aktuální amountG pokud ještě není
+   · Pokud proportional: newAmount = oldAmount * factor
+   · Pokud uniform: newAmount = max(0.1, oldAmount + delta)
+   · amountG = newAmount, packageId = pkg.id, calibrated = true, calibrationDiff = newAmount - originalAmountG
+   · Přepočítej cost, mitMg, sevenOhMg
+6. pkg.status = 'finished', pkg.remainingWeightG = 0, pkg.finishedAt = now, pkg.calibrated = true
+7. pkg.reconciliation = { date, method, targetWeightG, diff, factor, delta, doseIds, originalAmounts }
+
+undoReconciliation: pro každou doseId v reconciliation.doseIds → amountG = originalAmounts[doseId], calibrated = false, smaž calibrationDiff, přepočítej cost/MIT. Pak pkg.status = 'active', pkg.remainingWeightG = initialWeightG - Σ assignedDoses.amountG, smaž reconciliation, calibrated = false.
+
+9.11 Quick log (lib/quickLog.ts)
+
+Přidá dávku okamžitě (bez modálu):
+
+· S state.settings.quickLogConfirm === true → nejprve confirm dialog
+· Najdi strain, aktivní balení (sníží remainingWeightG)
+· Vytvoř dose s beverageId: 'bev_water', rating: 4, effect: 'energy', note: ''
+· Toast Zapsáno: +Xg, zvuk, checkAchievements(), přerender
+
+---
+
+10. Design system (CSS)
+
+10.1 CSS custom properties (:root)
+
+```css
+:root {
+  --bg: #000000;
+  --surface: rgba(28, 28, 30, 0.78);
+  --surface-solid: #1c1c1e;
+  --surface-2: rgba(44, 44, 46, 0.85);
+  --surface-2-solid: #2c2c2e;
+  --surface-3: #3a3a3c;
+  --surface-glass: rgba(32, 32, 36, 0.65);
+  --border: rgba(255, 255, 255, 0.1);
+  --border-subtle: rgba(255, 255, 255, 0.05);
+  --border-glass: rgba(255, 255, 255, 0.12);
+  --border-glass-top: rgba(255, 255, 255, 0.22);
+  --text: #ffffff;
+  --muted: #8e8e93;
+  --faint: #636366;
+  --accent: #30d158;
+  --accent-light: #5ee684;
+  --accent-dim: rgba(48, 209, 88, 0.16);
+  --accent-glow: rgba(48, 209, 88, 0.35);
+  --danger: #ff453a;
+  --danger-dim: rgba(255, 69, 58, 0.18);
+  --danger-glow: rgba(255, 69, 58, 0.4);
+  --warning: #ff9f0a;
+  --warning-dim: rgba(255, 159, 10, 0.18);
+  --warning-glow: rgba(255, 159, 10, 0.35);
+  --info: #0a84ff;
+  --cyan: #64d2ff;
+  --purple: #bf5af2;
+  --pink: #ff375f;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --radius-xl: 24px;
+  --radius-pill: 999px;
+  --nav-h: 64px;
+}
+```
+
+10.2 Témata (body[data-theme="…"])
+
+```css
+body[data-theme="cyan"]   { --accent: #64d2ff; --accent-light: #90e0ef; --accent-dim: rgba(100,210,255,0.16); --accent-glow: rgba(100,210,255,0.35); }
+body[data-theme="purple"] { --accent: #bf5af2; --accent-light: #da8fff; --accent-dim: rgba(191,90,242,0.16);  --accent-glow: rgba(191,90,242,0.35); }
+body[data-theme="amber"]  { --accent: #ff9f0a; --accent-light: #ffb340; --accent-dim: rgba(255,159,10,0.16);  --accent-glow: rgba(255,159,10,0.35); }
+body[data-theme="rose"]   { --accent: #ff375f; --accent-light: #ff6b8b; --accent-dim: rgba(255,55,95,0.16);   --accent-glow: rgba(255,55,95,0.35); }
+body[data-theme="gold"]   { --accent: #ffd60a; --accent-light: #ffe066; --accent-dim: rgba(255,214,10,0.16);  --accent-glow: rgba(255,214,10,0.35); }
+```
+
+Pro custom se --accent, --accent-light, --accent-dim, --accent-glow injektují inline na <body> (body.style.setProperty(...)). lightenHex(hex, 46) a hexToRgba(hex, alpha) helpery.
+
+10.3 Body layout
+
+```css
+body {
+  background: #000;
+  color: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif;
+  min-height: 100dvh;
+  font-size: 14px;
+  line-height: 1.4;
+  user-select: none;
+  -webkit-user-select: none;
+  overflow-x: hidden;
+}
+input, select, textarea { user-select: text; -webkit-user-select: text; font: inherit; color: inherit; }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; touch-action: manipulation; }
+
+.app {
+  max-width: 540px;
+  margin: 0 auto;
+  min-height: 100dvh;
+  padding: env(safe-area-inset-top) 14px calc(var(--nav-h) + 38px + env(safe-area-inset-bottom));
+}
+```
+
+10.4 Glass povrchy
+
+```css
+.card, .bento-tile, .dash-dial-card, .dash-telemetry-card, .dash-mini-card {
+  background: var(--surface);
+  backdrop-filter: blur(28px) saturate(190%);
+  -webkit-backdrop-filter: blur(28px) saturate(190%);
+  border: 0.5px solid var(--border-glass);
+  border-top: 0.5px solid var(--border-glass-top);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+}
+.card { padding: 14px 16px; margin-top: 10px; }
+```
+
+10.5 Bottom nav
+
+Fixační spodní lišta, výška calc(var(--nav-h) + safe-area-inset-bottom), 5 sloupců (grid), pozadí rgba(18,18,20,0.82) + backdrop-filter: blur(35px) saturate(200%), top border 0.5px --border-glass-top. Prostřední FAB = 52×52 kruh s background: var(--accent), translateY(-9px), stín s accent-glow.
+
+10.6 Fullscreen modal a sheets
+
+· Fullscreen modal (dose): position: fixed; inset: 0; transform: translateY(100%) → .open { transform: translateY(0) }, transition: transform 0.32s cubic-bezier(0.32, 0.72, 0.24, 1)
+· Bottom sheet: position: fixed; bottom: 0; left: 50%; transform: translate(-50%, 105%) → .open { translate(-50%, 0) }, border-radius: 24px 24px 0 0, max-height: 92dvh, s sheet-grab (38×4.5px pill nahoře) pro gesto tažení dolů
+· Drag-to-dismiss: touchstart na .sheet-grab nebo .sheet-title (nebo když scrollTop === 0) → track dy → pokud > 80px na touchend → popSheet
+
+10.7 Density & font scale (na <body>)
+
+```css
+body.density-compact { --nav-h: 56px; font-size: 12.5px; }
+body.density-compact .card { padding-top: 10px; padding-bottom: 10px; }
+body.fs-large  { font-size: 15.5px; }
+body.fs-xlarge { font-size: 17px; }
+body.hist-compact .dose-row { padding: 4px 9px; gap: 7px; margin-top: 3px; border-radius: 9px; }
+```
+
+10.8 Privacy mode
+
+```css
+body.privacy-on .privacy-val { filter: blur(7px); transition: filter 0.15s; }
+body.privacy-on .privacy-val:active { filter: none; }
+```
+
+10.9 Animations
+
+```css
+@keyframes appleFade { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+@keyframes toastPop  { from { opacity: 0; transform: translateY(10px) scale(0.95); } to { opacity: 1; transform: none; } }
+.screen.active { display: block; animation: appleFade 0.18s cubic-bezier(0.16, 1, 0.3, 1); }
+```
+
+---
+
+11. Obrazovky — detailní spec
+
+11.1 Dashboard (DashboardScreen.tsx)
+
+Struktura (shora dolů, vše pod sebou v .dash-bento-container, gap 8px):
+
+1. Top header (.top-header) – logo leaf icon + "Kratom Tracker", datum cap(fmtDateLong(Date.now())), dvě icon-btn (privacy toggle = eye/eyeOff, settings = gear → přepne tab na settings)
+2. Quick row + HUD row (podmíněno dashShowQuickRow / dashShowHud) – horizontálně scrollovatelný řádek:
+   · Quick: čipy +1g, +2g, +2.5g, +3g (z quickDosePresets), ⧉ Xg (repeat last), 💧+250ml (pokud hydration). Klik → quickLogDose / addWater
+   · HUD: pilulky 🔥 Xd (limit streak), ⚡ X% (receptor score), 🏆 X/Y (achievements – klik otevře Analytics → Úspěchy)
+3. Smart insight banner (.dash-smart-insight) – podmíněno dashShowInsight. Logika výběru (priorita shora):
+   · Pokud todayG >= hardL → danger "STOP limit překročen!"
+   · Pokud todayG >= L * 0.8 → warn "Pozor na limit"
+   · Pokud aktivní cooldown → warn "Aktivní cooldown"
+   · Pokud strain streak ≥ threshold → warn "Rotace odrůd"
+   · Pokud todays.length === 0 → good "Čistý start dne"
+   · Jinak → good "Optimální tempo"
+4. Aktivní T-Break karta (pokud tbreakActive) NEBO návrh na T-Break (pokud receptorScore < 60 a todays.length === 0)
+5. Hero grid (.dash-hero-grid, 2 sloupce):
+   · Daily limit dial card (dashShowHero) – PrecisionDial nebo ConcentricLimitsRing dle dashboardDialStyle. Nad ním malý label + badge s L g. Pod ním STOP: Xg a Útrata: Y Kč.
+   · Telemetry card (dashShowTelem) – cooldown status (Připraveno / Zbývá X), poslední dávka info, divider, aktivní MIT s MiniActiveMitSparkline
+6. Vitals grid (2 sloupce):
+   · Timeline card (dashShowTimeline) – MiniTodayTimeline (SVG s barevnými bary dávek od 06:00 do 24:00), pod tím "Průměr Xg / dávka"
+   · Hydration mini (dashShowWater + enableHydration) – progress bar s vodou, dvě tlačítka +wq1ml / +wq2ml. Pokud hydration vypnuto, ale enableReceptorScore → mini receptor & rotace karta
+7. Today activity card (dashShowActivity) – "Dnešní aktivita" + link "Zobrazit historii →". Pod tím max dashRecentDosesCount řádků (default 2). Každý: barevný dot, Xg StrainName, beverage emoji, čas, hvězdičky. Pokud prázdné → "Dnes zatím žádná dávka · Plná citlivost receptorů"
+8. Stats strip (.stats-4, dashShowStats) – 4 buňky:
+   · Skladem (klik → stock) – stockTotal g, ~runwayDays dní
+   · Útrata – totalSpend, z X Kč
+   · Dnes dávek – todays.length, ø Xg
+   · 7D Posun – renderDeltaTag(todayG, avg7d, invert=true) (šipka nahoru = warn, dolů = good) s labelem "vs 7d ø"
+
+Všechny privacy-val elementy (skladem, útrata, MIT) se při privacy mode bluří.
+
+11.2 Stock (StockScreen.tsx)
+
+1. Header – package icon + "Sklad", podtitulek "Sklad a balení", dvě icon-btn (add-package plus, settings)
+2. KPI strip (4 sloupce, stats-4) – Skladem celkem X g, Hodnota skladu Y Kč (počítá remaining/initial * costTotal pro všechny non-finished)
+3. Primary button "Přidat nové balení" (→ otevře PackageSheet v new módu)
+4. Filter seg – Otevřená (X) / Zásoba (Y) / Spotřebovaná (Z) – filtruje packages dle statusu. Aktuální filtr v stockFilter lokálním stavu.
+5. Karty balení – pro každé balení karta:
+   · Hlavička: dot s.color + s.name (bold 15px) + pkg.name · pkg.note. Vpravo delta-tag se statusem (Otevřené/Zásoba/Hotovo · Přepočteno)
+   · Pokud non-finished: progress bar remaining/initial * 100%, pod tím X g zbývá / Původně Y g. ETA (pokud spočítáno): Spotřeba Xg/den · vystačí ≈ Y dní (barva dle práhů: ≤7 danger, ≤14 warning, jinak accent)
+   · Pokud finished: karta "Stav balení / Spotřebováno celkem Xg" + delta-tag s reconciliation.diff
+   · Footer: X zapsaných dávek (Yg) / Z Kč (W Kč/g)
+   · Tlačítka:
+     · active: "Balení došlo (Dopočet)" (→ ReconcileSheet)
+     · unopened: "Otevřít k odběru" (nastaví status = 'active', openedAt = now)
+     · finished + calibrated: "Vrátit přepočet (Zpět)" → undoReconciliation
+     · finished + !calibrated: "Přepočítat dávky"
+     · icon-btn pencil (edit) / trash (delete s confirmem)
+
+use14 průměr pro ETA: suma amountG za posledních 14 dní grupovaná dle strainId, děleno 14.
+
+11.3 History (HistoryScreen.tsx)
+
+1. Header – title "Historie" + settings icon-btn
+2. Heatmap card (#hist-heatmap-card, podmíněno enableHeatmap) – posledních 28 dní jako 14sloupcová grid (.cal-grid s grid-template-columns: repeat(14, 1fr)), každá buňka = den s číslem dne, barva dle úrovně: lvl-0 (prázdné), lvl-1..4 (0/25/50/75/100% limitu, zelená se stupňuje), over-limit (oranžová nad limit). Klik → filterDayKey = k a přepni na view: 'list'
+3. Filter card (#hist-filter-card, podmíněno histShowFilters):
+   · Chip row: Vše + jednotlivé strains (s barevným dotem)
+   · Chip row: 7 dní / 30 dní / 90 dní / Vše
+   · Seg: ☰ Seznam / 📅 Kalendář (druhé jen pokud enableCalendarView)
+   · Search input s lupa iconem vlevo (.input + search icon overlay). Placeholder "Hledat druh, nápoj nebo poznámku…". Debounce 180ms.
+4. Summary line (#hist-summary) – X dávek · Y g (Z mg MIT) · W Kč
+5. Kalendář wrap (#hist-cal-wrap) – zobrazeno pokud view === 'cal'
+6. List (#hist-list) – seskupeno po dnech:
+   · Hlavička dne: Dnes / Včera / cap(fmtDateMid), vpravo X g · Y Kč (accent barva, uppercase, 11px)
+   · Pro každou dávku .dose-row: barevný dot, hlavička (strainName + [beverage pill] + [rating badge ★X] + [calibrated pill ⚖️ +Xg]), pod tím time · původně Xg (pokud calibrated) · note · X mg MIT (MIT jen pokud showAlkaloids), vpravo X g (bold) + Y Kč (pokud showFinances). Klik → edit dose
+   · Pokud histState.filterDayKey je nastaven, filtruj jen dávky toho dne (a ignoruj cutoff days)
+
+Kalendář (HistoryCalendar):
+
+· Hlavička: <  March 2026  > (chevrony pro měsíce, klik mění calMonth)
+· 7-sloupcová grid, hlavičky Po Út St Čt Pá So Ne (nebo dle weekStartsMonday)
+· Buňky dnů: .cal-day s číslem, Xg a barevným mini barem (ok/warn/over). Dnešní den = accent border. Jiný měsíc = opacity 0.28. Selected (filterDayKey) = accent border + glow.
+· Footer: X aktivních dní · Y g celkem + "Zrušit filtr dne" tlačítko (pokud filtr aktivní)
+
+11.4 Analytics (AnalyticsScreen.tsx)
+
+1. Header – title "Přehled" + settings
+2. Sub-nav tabs (.sub-nav-tabs): 📊 Souhrn / ⏱ Rozestupy / 🌿 Odrůdy / 💚 Zdraví & Plán / 🏆 Úspěchy. Aktivní = accent bg, černý text
+3. Period seg (#ana-period-seg): 7 dní / 14 dní / 30 dní (default) / 90 dní / Vše
+4. Content (#ana-content) – renderuje dle anaSubTab
+
+Souhrn (SummaryTab):
+
+· Smart insights card (pokud enableSmartInsights)
+· Karta "Vyhlazená křivka spotřeby" – SmoothBezierChart s 7d MA, limit linkou, hard limit linkou, peak markerem. Pod tím chart-header-stats (4 KPI: Denní průměr, Maximum dne, Aktivní dny, Celkem spotřeba)
+· Karta "Expozice Mitragyninu" (pokud showAlkaloids) – MitragynineCurve, KPI 4 (Celkem MIT, Max dne, Na kg váhy, 7-OH celkem)
+· Karta "Finanční útrata" (pokud showFinances) – SpendingBarChart, KPI 4 (Denní ø, Cena za gram, Cena 1 dávky, Nápoje podíl)
+· Karta "Vývoj citlivosti receptorů" (pokud enableReceptorScore) – ToleranceTrend, KPI 4 (Aktuální stav, Cíl ≥ 90%, Dny do resetu, Regenerace +X%/d)
+· Karta "Rozdělení velikostí dávek" – DoseHistogram (bins + medián/mód/σ)
+· Bento grid: 4 malé dlaždice (Celková spotřeba, Denní průměr, Průměrná dávka, Útrata celkem) s delta tags
+· Predikce spotřeby & KPI (full width) – 4 subcely: Skladová výdrž, 7d vs 30d trend, Projektovaný rok, Průměrný odstup
+· Rozložení druhů (full width) – StrainDonut + legenda s avgRating hvězdičkami
+· 24h Cirkadiánní křivka (full width, pokud enableHourlyDistribution a curDoses.length > 0) – CircadianDayNight (graf s night zónami + 4 quad karty Ráno/Odp./Večer/Noc)
+
+Rozestupy (IntervalsTab):
+
+· KPI grid: Průměrný rozestup (s mediánem), Disciplína (≥ threshold), Noční okno, Extrémy (min/max)
+· Karta "Historie rozestupů" – IntervalTrend s threshold linkou
+· Karta "Denní disciplína" – ComplianceRate (stacked bars s 80% ref line)
+· Karta "Kontinuální hladina MIT" – PlasmaKineticsContinuous (křivka + max/avg/current + poločas β)
+· Karta "Týdenní matice 7×24" – WeeklyMatrix
+
+Odrůdy (StrainsTab):
+
+· KPI grid: Aktivní druhy, Index rotace (Shannon), Dominantní druh, Stav adaptace
+· Karta "Skóre rotace" – DiversityTrend (progress bar s pct, streak, rating)
+· Karta "Evoluce podílu druhů" – StrainEvolution (stacked bar chart + legenda)
+· Karta "Celkový podíl" – StrainDonut + legenda s g / % / avgRating
+· Karta "Účinky a spokojenost dle odrůd" – seznam per strain s effect-chips (kolikrát který efekt)
+
+Zdraví & Plán (HealthTab):
+
+· KPI grid: Citlivost receptorů, Denní cíl tekutin, Cíl Taperingu, Potenciální úspora
+· T-Break hub karta (aktivní/neaktivní stav, tlačítka Spustit/Ukončit, historie pauz)
+· Karta "Hydratační bilance" – HydrationBalance (voda vs. dynamický cíl vč. kratomu)
+· Karta "Simulátor T-Breaku" – TBreakSimulator (14denní projekce)
+· Karta "Plán taperingu" (pokud taperingEnabled) – TaperingPlan + savings kalkulačka. Jinak info card s odkazem do nastavení.
+
+Úspěchy (AchievementsTab):
+
+· Progress bar s X / 14
+· 4 mini karty streaků (dny v limitu, splněné pauzy, dny vody, série odstupů)
+· Grid dlaždic (158px min) pro každý úspěch. Odemčené: plná barva, accent border, datum odemčení. Neodemčené: opacity 0.55, grayscale 0.8, progress X/target.
+
+11.5 Settings (SettingsScreen.tsx)
+
+Sekce (všechny jako <Card> s card-title), pořadí:
+
+1. 🎨 Vzhled & Rozhraní – theme chips, dial style select, analytics subtab select, sparklines switch, custom color picker (pokud theme=custom), startTab select, uiDensity select, fontScale select, timeFormat24 switch, weekStartsMonday switch, dashRecentDosesCount input
+2. 🧱 Sestava plochy (Dashboard) – 9 switchů pro dashShow*
+3. 📜 Historie – histCompactRows, histShowFilters (2 switch)
+4. 📝 Dialog dávky & Logování – modalShowPreview, modalShowMitEstimate, modalShowNoteTags, quickLogConfirm (4 switch)
+5. 🎯 Denní limity a rozpočty – dailyLimitG, dailyHardLimitG, dailyBudgetKc, monthlyBudgetKc, cooldownMin, intervalComplianceThresholdH, currency, haptics switch
+6. 🧬 Farmakokinetika & Vzorce alkaloidů – bodyWeightKg, mitTMaxH, mitHalfLifeAlphaH, mitHalfLifeBetaH, defaultMitPct, defaultSevenOhPct
+7. 📈 Model tolerance & Citlivosti receptorů – toleranceRecoveryPerDay, tolerancePenaltyLimit, tolerancePenaltyInterval, toleranceConsecutiveDaysPenalty, tbreakGoalHours
+8. 💧 Hydratace – dailyWaterGoalMl, waterPerGramKratomMl, waterQuickMl1, waterQuickMl2
+9. ⚖️ Dávkování & Rychlé logování – defaultDoseG, quickDosePresets (comma-separated input), autoSelectActivePackage switch, doseStepDefault select
+10. 🧠 Chování & Ovládání – dayStartHour select (0–6), confirmBeforeDelete switch, soundsEnabled switch, enableNotifications switch (s requestPermission flow)
+11. 📦 Sklad & Pravidla dopočítávání – defaultReconcileMethod seg, reconcileAutoIncludeUnassigned switch, lowStockWarningG, defaultPackageWeightG, defaultPricePerG
+12. 📉 Tapering – taperingEnabled switch, pod ním (pokud zapnuto) taperingStartG, taperingTargetG, taperingWeeklyReductionPct, taperingStepG, taperingDaysInterval
+13. 🧩 Moduly & Funkce – 11 switchů pro enable* + show* + diversityWarningThreshold input (pokud rotace on)
+14. ☕ Katalog nápojů (pokud enableBeverages) – seznam s ikonou, jménem, cenou, poznámkou, chevron → BeverageSheet. "Přidat nový nápoj" tlačítko
+15. 🌿 Druhy kratomu – seznam strainů (dot, jméno, X% MIT pill, cena/g, sklad g, chevron) → StrainSheet. "Přidat nový druh"
+16. 💾 Záloha & Správa dat – KPI 4 (dávek, druhů, balení, kB dat), "Nejstarší záznam … Poslední záloha …" s warning, autoBackupReminderDays input, tlačítka Export JSON / Export CSV / Obnovit / Vymazat vše
+17. ℹ️ Nápověda & O aplikaci – Klávesové zkratky btn (→ HelpSheet), Přehrát úvod btn (→ OnboardingSheet), text "Kratom Tracker v4.1 · Data se ukládají pouze lokálně…"
+
+Apply pattern: Každé pole má data-set={key}, data-type="number" | "string" | "number-string" | "array-num" (nebo checkbox). On change → updateSettings + toast "Nastavení uloženo" + rerender.
+
+Speciální pole:
+
+· quickDosePresets: input "1, 2, 2.5, 3" → parsuj comma-separated, filtruj > 0, fallback [1,2,2.5,3]
+· dashRecentDosesCount: clamp 1–5, integer
+· dayStartHour: clamp 0–12
+· waterQuickMl1/2: clamp 25–5000
+· enableNotifications: pokud zapnuto → request Permission; pokud denied/unsupported → switch zpět na false + toast err
+· customAccentHex: color picker, při změně → applyTheme('custom')
+
+---
+
+12. Modály a sheets — detailní spec
+
+12.1 DoseModal (fullscreen, DoseModal.tsx)
+
+Header (fixed nahoře, glass): Zrušit btn-ghost vlevo / title "Nová dávka" nebo "Upravit dávku" / Uložit btn-primary vpravo (nebo "Uložit změny")
+
+Body (scrollable, sekce v .fd-card):
+
+1. Amount stepper hero:
+   · Velký stepper: − (54×54 circle) / editovatelný <input id="dose-amt-input"> s velkým číslem (42–48px, bold) + label "gramů" / +
+   · Pod tím: quick chips (quickDosePresets z settings) + step size seg (0.1 / 0.25 / 0.5 / 1) – poslední aktivní má .on
+2. Live preview card (.fd-card, podmíněno modalShowPreview):
+   · .fd-label "📊 Náhled dopadu · živě"
+   · .fd-stats 4 buňky: Cena celkem / Zbude v balení / Čistý MIT / Dávka/kg
+   · Pod tím (pokud enablePharmacokinetics + modalShowMitEstimate): .fd-est s odhadem vrcholu a poklesu pod 1 mg
+3. Druh a balení:
+   · .fd-label "🌿 Druh a balení"
+   · Strain chips (horizontal scroll)
+   · <select id="dose-pkg-choice"> – "Bez balení (pouze volný odhad)" + aktivní/unopened balení vybraného strainu s (zbývá X g)
+4. Nápoj (pokud enableBeverages):
+   · .fd-label "🥤 Doprovodný nápoj"
+   · Beverage chips s ikonou + názvem + (+X Kč) pokud placený a showFinances
+5. Hodnocení & čas (pokud enableMoodRating):
+   · .fd-label "⭐ Hodnocení, efekt a čas · (HH:MM)"
+   · Star rating: 5 tlačítek ★ (24px), aktivní = warning barva
+   · Effect chips (5 typů)
+   · Seg "Právě teď" / "Zadat jiný čas"
+   · datetime-local input (hidden pokud "now", toLocalInput(Date.now()) default)
+6. Poznámka:
+   · .fd-label "📝 Poznámka"
+   · input maxlength=160, placeholder "např. nalačno, před cvičením…"
+   · Quick tags (pokud modalShowNoteTags): Nalačno / Po jídle / Pracovní fokus / Před tréninkem – append s ", " separátorem
+7. Smazat dávku btn-danger (jen v edit módu)
+
+Save logika:
+
+· Validace: strain vybrán + amount > 0
+· Pokud edit:
+  · Vrať starou gramáž do starého balení
+  · Pokud se změnil amountG, zruš calibration (calibrated = false, smaž calibrationDiff)
+  · Přepiš všechna pole (snapshoty strainName/color/beverage)
+· Jinak: push nová dose (uid('d')), dopočítej cost/MIT/7-OH
+· Pokud má dose packageId: pkg.remainingWeightG -= amountG; pokud pkg.status === 'unopened' → 'active', openedAt = now
+· Ulož lastStrainId, lastAmount, lastBeverageId do settings
+· Save, close, buzz, checkAchievements, rerender
+
+Delete logika (v edit módu):
+
+· Pokud confirmBeforeDelete → confirm dialog
+· Vrať gramáž do balení
+· Odeber z state.doses
+· Toast s akcí "Vrátit zpět" (5.2s) → obnoví dávku + odečte z balení znovu
+
+12.2 PackageSheet (PackageSheet.tsx)
+
+· Title "Nové balení" / "Upravit balení"
+· Strain chips (povinný výběr)
+· Název balení (input, default "Balení {defaultW}g – {strain.name}")
+· Rychlé velikosti chips: 25g / 50g (default) / 100g / 250g / 500g (klik nastaví weight + přepočítá cost)
+· Hmotnost (g) input s inp-suf g
+· Row2: Celková cena (Kč) / Cena za gram (Kč/g) – navzájem se přepočítají (změna jednoho → přepočítej druhé)
+· Seg "Otevřené (ihned odebírat)" / "Zásoba (neotevřené)"
+· Poznámka (input, maxlength 120)
+· Actions: Zrušit / Uložit
+· Delete btn-danger (edit mode)
+
+Save logika: Validace weight > 0. Pokud chybí priceG ale je cost → dopočítej; naopak. Při edit: pokud se změní initialWeightG, remainingWeightG += (newWeight - oldWeight), clamp ≥ 0.
+
+Delete: Confirm → odeber package, u dávek s packageId === id nastav packageId = null.
+
+12.3 BeverageSheet (BeverageSheet.tsx)
+
+· Title "Nový nápoj" / "Upravit nápoj"
+· Název (input, maxlength 40)
+· Row2: Ikona (input, maxlength 4, center, 18px) / Cena za porci (Kč)
+· Poznámka (maxlength 100)
+· Actions
+· Delete (disabled pro bev_water)
+
+12.4 StrainSheet (StrainSheet.tsx)
+
+· Title "Nový druh" / "Upravit druh"
+· Název
+· Row2: Cena (Kč/g) / Výchozí balení (g)
+· Row2: Obsah MIT (%) / Obsah 7-OH (%)
+· Barva: swatch grid (PALETTE) – chips s barevným dotem, aktivní .on
+· Poznámka
+· Actions + Delete (blokováno pokud strains.length <= 1)
+
+12.5 ReconcileSheet (ReconcileSheet.tsx)
+
+Nejsložitější sheet. Logika:
+
+Header: "Balení spotřebováno – dopočet"
+
+Info o balení: dot s.color + strain name + · pkg.name
+
+Target weight input: Skutečně spotřebovaná hmotnost balení, default = pkg.initialWeightG, s live přepočtem při inputu
+
+Summary hero card (glass, barevný border dle diff):
+
+· +X g velkým písmem (barevně: zeleně pokud roste, oranžově pokud klesá)
+· delta-tag vpravo "Dávky se ZVÝŠÍ / SNÍŽÍ / Přesná shoda (X%)"
+· 2 subcely: Cíl spotřeby / Zapsané odhady (N)
+· Text vysvětlení
+
+Method seg: "Poměrně (X× dle váhy)" / "Rovnoměrně (±Y g na dávku)" – pod tím hint s popisem
+
+Include unassigned switch (pokud existují volné dávky daného strainu)
+
+Doses list (max-height 220px, scrollable):
+
+· Header s "Výběr dávek (X/Y)" + toggle vše
+· Každá dávka: checkbox, info (X min ago · time · note, pod tím datum + "volná dávka" pokud bez packageId), vpravo old → new s delta-tagem. Nevybrané = šedé "Vynecháno".
+
+Actions (grid 1fr 1fr): "Pouze uzavřít" / "Přepočítat N dávek" (disabled pokud 0 vybraných)
+
+Live preview: Při změně target weight / metody / výběru se přepočítá factor / delta a znovu se vyrenderuje celý sheet.
+
+12.6 ConfirmDialog (ConfirmDialog.tsx)
+
+Sheet s:
+
+· sheet-grab
+· Title (17px, bold)
+· Message (13.5px, muted, line-height 1.45)
+· 2 tlačítka: "Zrušit" btn-ghost / "Potvrdit" btn-danger (nebo "ok" text custom)
+
+Implementuj jako Promise<boolean>:
+
+```typescript
+const confirm = useConfirm();
+const ok = await confirm({
+  title: 'Smazat dávku?',
+  message: '...',
+  ok: 'Smazat'
+});
+```
+
+12.7 HelpSheet (HelpSheet.tsx)
+
+· Title "⌨️ Klávesové zkratky"
+· Popis "Fungují, když není otevřený žádný dialog a nepíšeš do pole."
+· Seznam kbd-row:
+  · D nebo N → Nová dávka
+  · W → Přidat vodu (malá porce)
+  · 1–5 → Přepnout záložky
+  · E → Export zálohy JSON
+  · ? → Tato nápověda
+  · Esc → Zavřít dialog / panel
+· Tlačítko "Rozumím"
+
+12.8 OnboardingSheet (OnboardingSheet.tsx)
+
+Zobrazí se při prvním spuštění (!state.settings.onboarded). Title "✨ Vítej v Kratom Trackeru" + badge v4.1.
+
+6 feat rows (ikonka + bold nadpis + popis):
+
+· 🎯 Chytré limity
+· 🧬 Farmakokinetika
+· 🧘 T-Break hub
+· 🏆 Úspěchy & postřehy
+· 📅 Kalendář & heatmapa
+· 💾 Data jen u tebe
+
+Tlačítko "Začít používat →" → onboarded = true, close.
+
+---
+
+13. Grafy — seznam SVG komponent
+
+Všechny grafy jsou vlastní SVG komponenty. Pro každý specifikuj:
+
+Komponenta Použití Klíčové prvky
+PrecisionDial Dashboard hero Multi-arc: vnější tick marks (28), hlavní oblouk (0..hardLimit×1.15), inner arc pro budget. Bílý text s velkým číslem g, badge s "% limitu / zbývá Xg / +Xg PŘES / STOP +Xg". Barva oblouku dle gPct (accent / #ffcc00 při 75%+ / warning / danger)
+ConcentricLimitsRing Dashboard hero (alt) Dva soustředné kruhy: vnější g limit, vnitřní kc budget. Over-run = danger glow. Target ikona ve středu
+MiniTodayTimeline Dashboard timeline Vertikální bary od 06:00 do 24:00, výška ∝ amountG, barva dle strain. Labels 06h/12h/18h/24h
+MiniActiveMitSparkline Dashboard telemetry Plazmatická křivka MIT od −6h do +6h, aktuální bod žlutý s labelem "Teď"
+SmoothBezierChart Analytics Souhrn Kubická Bezier křivka denní spotřeby, gradient area fill, 7d MA (přerušovaná žlutá), reference linky (STOP danger, LIMIT warning, ø accent), peak marker s hodnotou, time labels
+MitragynineCurve Analytics Souhrn Stejná technika, hodnoty v mg MIT. Reference: 1.5 mg/kg benchmark (cyan), ø čára, peak marker
+SpendingBarChart Analytics Souhrn Stacked bars (kratom/warning + beverage/cyan), reference linka denního budgetu (danger), legend
+ToleranceTrend Analytics Souhrn Spline s barevnými zónami pozadí (80–100% zelená, 50–80% oranžová, 0–50% červená), ref linky 80%/50%, poslední bod s pulsem
+DoseHistogram Analytics Souhrn 5 horizontálních bars s procenty, pod tím 3 subcely (Medián / Mód / σ)
+CircadianDayNight Analytics Souhrn 24 hodinových bars, night zóny (22–6) fialově podbarvené, svislé gridliny, pod tím 4 quad karty (Ráno/Odp./Večer/Noc)
+StrainDonut Analytics Donut s stroke-dasharray pro každý strain, střed "X g / GRAMŮ", legenda
+IntervalTrend Analytics Rozestupy Spline průměrných rozestupů, threshold linka, min-dot marks (danger), legenda
+ComplianceRate Analytics Rozestupy Stacked vertikální bars (compliance %), 80% ref linka, color coded
+PlasmaKineticsContinuous Analytics Rozestupy Spojitá křivka MIT přes období, area gradient, ø linka, poslední bod "X mg teď", time labels
+WeeklyMatrix Analytics Rozestupy HTML grid 7×24 buněk s opacity dle count, den labels vlevo, hodiny nahoře
+StrainEvolution Analytics Odrůdy Stacked bar chart přes dny (barvy dle strain), legenda s součty
+DiversityTrend Analytics Odrůdy Progress bar s pct + streak info (není graf, HTML karta)
+HydrationBalance Analytics Zdraví Dvě čáry: skutečná voda (cyan) + dynamický cíl (bílá přerušovaná), time labels
+TBreakSimulator Analytics Zdraví Projekce citlivosti +0/1/2/3/5/7/14 dní, 90% ref linka, hodnoty nad body
+TaperingPlan Analytics Zdraví Plán vs. skutečnost (cyan přerušovaná / warning plná), legend
+TBreakRing Dashboard + HealthTab Kruhový progress s stroke-dashoffset
+HeatmapGrid History 14sloupcová grid, barvy dle úrovně (0..4 + over-limit)
+
+Všechny SVG musí mít viewBox="0 0 340 H" (nebo menší pro mini verze), style="width: 100%; height: auto; display: block", role="img".
+
+Barevné gradienty používají <defs><linearGradient> s stop-color na var(--accent) (funguje, protože CSS variables jsou čitelné v SVG inline atributech).
+
+---
+
+14. Ikony (components/icons/)
+
+Icon.tsx – univerzální komponenta:
+
+```tsx
+interface IconProps { name: IconName; size?: number; strokeWidth?: number; className?: string; }
+function Icon({ name, size = 18, strokeWidth = 1.8, className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none"
+         stroke="currentColor" strokeWidth={strokeWidth}
+         strokeLinecap="round" strokeLinejoin="round"
+         className={className}
+         style={{ verticalAlign: 'middle', display: 'inline-block', flexShrink: 0 }}
+         aria-hidden="true"
+         dangerouslySetInnerHTML={{ __html: ICONS[name] }} />
+  );
+}
+```
+
+Kompletní mapa ikon (52 ikon) – všechny jsou 24×24, stroke-based (žádný fill, kromě některých <circle fill="currentColor">):
+
+```
+home, history, chart, settings, plus, x, trash, pencil, leaf, wallet,
+package, alert, check, chev, download, upload, search, calc, star, clock,
+droplet, shield, pulse, repeat, calendar, eye, eyeOff, target, sparkles,
+drop, flame, trophy, bell, bellOff, zap, keyboard, info, refresh, timer,
+sun, moon, list, grid, pie, sliders, award, activity, play, stop,
+bookmark, database, gauge
+```
+
+Path data zkopíruj 1:1 z původního SVG_ICONS objektu (každá ikona je buď <path>, <circle>, <rect>, <line>, <polygon>, <polyline> nebo <ellipse>). Nejdůležitější tvary (pro jistotu):
+
+· leaf: M4.5 19.5C4.5 11 10 5 20 4c-.5 10-5.5 15.5-13 15.5-1 0-1.8 0-2.5 0z + M4.5 19.5C7 13 11 9 16 7
+· home: M3.5 10.5 12 3.5l8.5 7 + M5.5 9.5V20a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1V9.5 + M9.5 21v-6h5v6
+· history: circle cx=12 cy=12 r=8.5 + M12 7.5V12l3.2 2.6
+· chart: M5 20v-7 M12 20V5.5 M19 20v-10 M3.5 21.5h17
+· package: M12 3.5 20 8v8l-8 4.5L4 16V8l8-4.5z + M4 8l8 4.5L20 8 + M12 12.5v8
+· check: `M4.5 12.5l5 5L19.5

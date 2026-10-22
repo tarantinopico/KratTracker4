@@ -1,0 +1,88 @@
+name: Build Web & Android APK
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-web:
+    name: 🌐 Sestavení Web Dist (npm run build)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Načtení repozitáře
+        uses: actions/checkout@v4
+
+      - name: 🟢 Nastavení Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: 📦 Instalace npm závislostí
+        run: npm install
+
+      - name: 🔨 Sestavení webové aplikace (npm run build)
+        run: npm run build
+
+      - name: 📤 Uložení sestaveného webu (dist) jako artefakt
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: dist/
+          retention-days: 30
+
+  build-android-apk:
+    name: 📱 Sestavení Android APK (Capacitor + Gradle)
+    needs: build-web
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Načtení repozitáře
+        uses: actions/checkout@v4
+
+      - name: 🟢 Nastavení Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: 📦 Instalace npm závislostí
+        run: npm install
+
+      - name: 📥 Stažení webového sestavení (dist)
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: dist
+
+      - name: ☕ Nastavení Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: 17
+
+      - name: 🤖 Příprava Android platformy přes Capacitor
+        run: |
+          npm install @capacitor/core@^6.0.0 @capacitor/cli@^6.0.0 @capacitor/android@^6.0.0
+          npx cap add android || true
+          npx cap sync android
+
+      - name: 🔨 Sestavení Android Debug APK (Gradle)
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: 📤 Uložení Android APK jako artefakt
+        uses: actions/upload-artifact@v4
+        with:
+          name: kratom-tracker-android-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
